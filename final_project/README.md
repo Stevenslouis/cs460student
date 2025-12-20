@@ -20,7 +20,7 @@
 
 **Requirements:**
 - Modern web browser with JavaScript enabled
-- Internet connection (for loading Three.js libraries)
+- Internet connection
 
 ## Usage
 
@@ -65,5 +65,3 @@ Use the control panel on the right side of the screen to:
 - **Stats.js**: Performance monitoring
 - **WebGL**: 3D graphics technology
 
-
-*Experience your own virtual art exhibition today!*
