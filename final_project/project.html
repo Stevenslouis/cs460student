@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Hallway Gallery</title>
+    <style>
+        html,
+        body {
+            background-color: #000;
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden !important;
+        }
+    </style>
+
+    <script async src="https://unpkg.com/es-module-shims@1.6.3/dist/es-module-shims.js"></script>
+    <script src="https://mrdoob.github.io/stats.js/build/stats.min.js"></script>
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@latest/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@latest/examples/jsm/"
+      }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { Pane } from 'https://cdn.jsdelivr.net/npm/tweakpane@4.0.5/dist/tweakpane.min.js';
+
+        let renderer, scene, camera;
+        let pane = new Pane();
+        let stats = null;
+
+        const keys = {};
+        let mouseDown = false;
+
+        const pictures = [];
+        const pictureFrames = [];
+        let savedImages = [];
+        let picturesPerSide = 3;
+
+        let hallwayObjects = {
+            floor: null,
+            ceiling: null,
+            leftWall: null,
+            rightWall: null,
+            endWall: null,
+            startWall: null
+        };
+
+        let hallLength = 50;
+        const hallWidth = 4;
+        const hallHeight = 4;
+        const spacing = 4;
+
+        const STORAGE_KEYS = {
+            IMAGES: 'hallway_images',
+            HALL_LENGTH: 'hallway_length',
+            PICTURES_PER_SIDE: 'hallway_pictures'
+        };
+
+        window.onload = function () {
+            scene = new THREE.Scene();
+
+            const fov = 75;
+            const aspect = window.innerWidth / window.innerHeight;
+            const near = 0.1;
+            const far = 800;
+            camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+            camera.position.set(0, 1.6, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            stats = new Stats();
+            document.body.appendChild(stats.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+            directionalLight.position.set(10, 10, 5);
+            scene.add(directionalLight);
+
+            var sceneui = pane.addFolder({ title: 'Lighting Controls' });
+            sceneui.addBinding(directionalLight.position, 'x', { min: -100, max: 100, label: 'Light X' });
+            sceneui.addBinding(directionalLight.position, 'y', { min: -100, max: 100, label: 'Light Y' });
+            sceneui.addBinding(directionalLight.position, 'z', { min: -100, max: 100, label: 'Light Z' });
+            sceneui.addBinding(directionalLight, 'intensity', { min: 0, max: 3, step: 0.1, label: 'Intensity' });
+
+            // Try to load from localStorage
+            try {
+                loadFromLocalStorage();
+            } catch (e) {
+                console.log("Couldn't load from localStorage, starting fresh");
+            }
+
+            createHallway();
+            setupControls();
+            setupUpload();
+
+            window.addEventListener('resize', onWindowResize, false);
+
+            window.addEventListener('beforeunload', () => {
+                try {
+                    localStorage.setItem(STORAGE_KEYS.IMAGES, JSON.stringify(savedImages));
+                } catch (e) {
+                    // Silently fail on unload
+                }
+            });
+
+            animate();
+        };
+
+        // ChatGPT code for localStorage with compression and error recovery
+        function saveToLocalStorage() {
+            try {
+                localStorage.setItem(STORAGE_KEYS.IMAGES, JSON.stringify(savedImages));
+                return true;
+            } catch (error) {
+                if (error.name === 'QuotaExceededError') {
+                    try {
+                        if (savedImages.length > 20) {
+                            savedImages = savedImages.slice(-20);
+                            localStorage.setItem(STORAGE_KEYS.IMAGES, JSON.stringify(savedImages));
+                            return true;
+                        }
+                    } catch (e2) {
+                        return false;
+                    }
+                }
+                return false;
+            }
+        }
+
+        function loadFromLocalStorage() {
+            try {
+                const savedImagesJSON = localStorage.getItem(STORAGE_KEYS.IMAGES);
+                if (savedImagesJSON) {
+                    savedImages = JSON.parse(savedImagesJSON);
+                }
+            } catch (error) {
+                savedImages = [];
+            }
+        }
+
+        // ChatGPT code for image compression to reduce localStorage usage
+        function compressImage(dataURL) {
+            return new Promise((resolve) => {
+                const img = new Image();
+                img.onload = function () {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+
+                    let width = img.width;
+                    let height = img.height;
+                    const maxWidth = 400;
+
+                    if (width > maxWidth) {
+                        height = (maxWidth / width) * height;
+                        width = maxWidth;
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    const compressedDataURL = canvas.toDataURL('image/jpeg', 0.7);
+                    resolve(compressedDataURL);
+                };
+                img.src = dataURL;
+            });
+        }
+
+        function createHallway() {
+            disposeHallwayWalls();
+            createHallwayWalls();
+            clearPicturesAndFrames();
+            createPictureFrames();
+            restoreAllImages();
+        }
+
+        // ChatGPT code for proper Three.js memory management
+        function disposeHallwayWalls() {
+            Object.values(hallwayObjects).forEach(obj => {
+                if (obj) {
+                    if (obj.geometry) obj.geometry.dispose();
+                    if (obj.material) {
+                        if (obj.material.map) obj.material.map.dispose();
+                        obj.material.dispose();
+                    }
+                    scene.remove(obj);
+                }
+            });
+        }
+
+        function clearPicturesAndFrames() {
+            pictures.forEach(pic => {
+                if (pic) {
+                    scene.remove(pic);
+                    if (pic.geometry) pic.geometry.dispose();
+                    if (pic.material) {
+                        if (pic.material.map) pic.material.map.dispose();
+                        pic.material.dispose();
+                    }
+                }
+            });
+            pictures.length = 0;
+
+            pictureFrames.forEach(frame => {
+                if (frame) {
+                    scene.remove(frame);
+                    if (frame.geometry) frame.geometry.dispose();
+                    if (frame.material) frame.material.dispose();
+                }
+            });
+            pictureFrames.length = 0;
+        }
+
+        function createHallwayWalls() {
+            const floorGeometry = new THREE.PlaneGeometry(hallWidth, hallLength);
+            const floorMaterial = new THREE.MeshLambertMaterial({ color: 0x333333 });
+            hallwayObjects.floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            hallwayObjects.floor.rotation.x = -Math.PI / 2;
+            hallwayObjects.floor.position.y = 0;
+            scene.add(hallwayObjects.floor);
+
+            const ceilingGeometry = new THREE.PlaneGeometry(hallWidth, hallLength);
+            const ceilingMaterial = new THREE.MeshLambertMaterial({ color: 0x222222 });
+            hallwayObjects.ceiling = new THREE.Mesh(ceilingGeometry, ceilingMaterial);
+            hallwayObjects.ceiling.rotation.x = Math.PI / 2;
+            hallwayObjects.ceiling.position.y = hallHeight;
+            scene.add(hallwayObjects.ceiling);
+
+            const leftWallGeometry = new THREE.PlaneGeometry(hallLength, hallHeight);
+            const leftWallMaterial = new THREE.MeshLambertMaterial({ color: 0x555555 });
+            hallwayObjects.leftWall = new THREE.Mesh(leftWallGeometry, leftWallMaterial);
+            hallwayObjects.leftWall.rotation.y = Math.PI / 2;
+            hallwayObjects.leftWall.position.set(-hallWidth / 2, hallHeight / 2, 0);
+            scene.add(hallwayObjects.leftWall);
+
+            const rightWallGeometry = new THREE.PlaneGeometry(hallLength, hallHeight);
+            const rightWallMaterial = new THREE.MeshLambertMaterial({ color: 0x555555 });
+            hallwayObjects.rightWall = new THREE.Mesh(rightWallGeometry, rightWallMaterial);
+            hallwayObjects.rightWall.rotation.y = -Math.PI / 2;
+            hallwayObjects.rightWall.position.set(hallWidth / 2, hallHeight / 2, 0);
+            scene.add(hallwayObjects.rightWall);
+
+            const endWallGeometry = new THREE.PlaneGeometry(hallWidth, hallHeight);
+            const endWallMaterial = new THREE.MeshLambertMaterial({ color: 0x444444 });
+
+            hallwayObjects.endWall = new THREE.Mesh(endWallGeometry, endWallMaterial);
+            hallwayObjects.endWall.position.set(0, hallHeight / 2, -hallLength / 2);
+            scene.add(hallwayObjects.endWall);
+
+            hallwayObjects.startWall = new THREE.Mesh(endWallGeometry, endWallMaterial);
+            hallwayObjects.startWall.position.set(0, hallHeight / 2, hallLength / 2);
+            hallwayObjects.startWall.rotation.y = Math.PI;
+            scene.add(hallwayObjects.startWall);
+        }
+
+        // ChatGPT code for dynamic picture frame positioning as hallway grows
+        function createPictureFrames() {
+            const maxPicturesPerSide = Math.floor((hallLength - 10) / spacing);
+            picturesPerSide = Math.max(picturesPerSide, maxPicturesPerSide);
+
+            const startZ = -((picturesPerSide - 1) * spacing) / 2;
+
+            for (let i = 0; i < picturesPerSide; i++) {
+                const z = startZ + (i * spacing);
+                createPictureFrame(-hallWidth / 2 + 0.05, hallHeight / 2 + 0.9, z, Math.PI / 2, 'left', z);
+            }
+
+            for (let i = 0; i < picturesPerSide; i++) {
+                const z = startZ + (i * spacing);
+                createPictureFrame(hallWidth / 2 - 0.05, hallHeight / 2 + 0.9, z, -Math.PI / 2, 'right', z);
+            }
+        }
+
+        function createPictureFrame(x, y, z, rotationY, wallSide, zPosition) {
+            const frameWidth = 1.5;
+            const frameHeight = 1.5;
+
+            const frameGeometry = new THREE.BoxGeometry(frameWidth, frameHeight, 0.1);
+            const frameMaterial = new THREE.MeshLambertMaterial({
+                color: 0x1a5fb4
+            });
+            const frame = new THREE.Mesh(frameGeometry, frameMaterial);
+            frame.position.set(x, y, z);
+            frame.rotation.y = rotationY;
+            scene.add(frame);
+            pictureFrames.push(frame);
+
+            const pictureGeometry = new THREE.PlaneGeometry(frameWidth - 0.2, frameHeight - 0.2);
+            const pictureMaterial = new THREE.MeshLambertMaterial({
+                color: 0x5dade2,
+                side: THREE.DoubleSide,
+                transparent: true
+            });
+
+            const picture = new THREE.Mesh(pictureGeometry, pictureMaterial);
+            picture.position.set(x + (rotationY > 0 ? 0.06 : -0.06), y, z);
+            picture.rotation.y = rotationY;
+            picture.userData = { wallSide, zPosition };
+            scene.add(picture);
+            pictures.push(picture);
+        }
+
+        // ChatGPT code for restoring images from localStorage with position matching
+        function restoreAllImages() {
+            savedImages.forEach((savedImage) => {
+                const pictureIndex = pictures.findIndex(pic =>
+                    pic.userData.wallSide === savedImage.wallSide &&
+                    Math.abs(pic.userData.zPosition - savedImage.zPosition) < 0.1
+                );
+
+                if (pictureIndex !== -1) {
+                    const picture = pictures[pictureIndex];
+                    const frame = pictureFrames[pictureIndex];
+
+                    const texture = new THREE.Texture();
+                    const img = new Image();
+                    img.onload = function () {
+                        texture.image = img;
+                        texture.needsUpdate = true;
+                        texture.minFilter = THREE.LinearFilter;
+                        texture.magFilter = THREE.LinearFilter;
+
+                        picture.material = new THREE.MeshLambertMaterial({
+                            map: texture,
+                            side: THREE.DoubleSide,
+                            transparent: true
+                        });
+
+                        frame.material.color.set(0x0a3f7a);
+                    };
+                    img.src = savedImage.dataURL;
+                }
+            });
+        }
+
+        function extendHallway() {
+            hallLength *= 1.5;
+            createHallway();
+        }
+
+        function setupUpload() {
+            const uploadFolder = pane.addFolder({ title: 'Image Upload' });
+
+            uploadFolder.addButton({
+                title: 'Upload Image',
+                label: 'Select File'
+            }).on('click', () => {
+                const fileInput = document.createElement('input');
+                fileInput.type = 'file';
+                fileInput.accept = 'image/*';
+                fileInput.style.display = 'none';
+                document.body.appendChild(fileInput);
+
+                fileInput.addEventListener('change', async (e) => {
+                    const file = e.target.files[0];
+                    if (file && file.type.startsWith('image/')) {
+                        const reader = new FileReader();
+                        reader.onload = async (e) => {
+                            try {
+                                // Use ChatGPT's compression function
+                                const compressedDataURL = await compressImage(e.target.result);
+
+                                let emptyPictureIndex = findEmptyPicture();
+
+                                if (emptyPictureIndex === -1) {
+                                    extendHallway();
+                                    emptyPictureIndex = findEmptyPicture();
+                                }
+
+                                if (emptyPictureIndex !== -1) {
+                                    const picture = pictures[emptyPictureIndex];
+                                    const frame = pictureFrames[emptyPictureIndex];
+
+                                    const newImage = {
+                                        dataURL: compressedDataURL,
+                                        wallSide: picture.userData.wallSide,
+                                        zPosition: picture.userData.zPosition
+                                    };
+                                    savedImages.push(newImage);
+
+                                    const texture = new THREE.Texture();
+                                    const img = new Image();
+                                    img.onload = function () {
+                                        texture.image = img;
+                                        texture.needsUpdate = true;
+                                        texture.minFilter = THREE.LinearFilter;
+                                        texture.magFilter = THREE.LinearFilter;
+
+                                        picture.material = new THREE.MeshLambertMaterial({
+                                            map: texture,
+                                            side: THREE.DoubleSide,
+                                            transparent: true
+                                        });
+
+                                        frame.material.color.set(0x0a3f7a);
+
+                                        try {
+                                            localStorage.setItem(STORAGE_KEYS.IMAGES, JSON.stringify(savedImages));
+                                        } catch (saveError) {
+                                            // Silent fail
+                                        }
+                                    };
+                                    img.src = compressedDataURL;
+                                }
+                            } catch (error) {
+                                console.log("Error processing image:", error);
+                            }
+                        };
+                        reader.readAsDataURL(file);
+                    }
+
+                    document.body.removeChild(fileInput);
+                });
+
+                fileInput.click();
+            });
+        }
+
+        function findEmptyPicture() {
+            for (let i = 0; i < pictures.length; i++) {
+                const picture = pictures[i];
+                const hasImage = savedImages.some(img =>
+                    img.wallSide === picture.userData.wallSide &&
+                    Math.abs(img.zPosition - picture.userData.zPosition) < 0.1
+                );
+
+                if (!hasImage) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        function setupControls() {
+            window.addEventListener('keydown', (e) => {
+                keys[e.key.toLowerCase()] = true;
+            });
+
+            window.addEventListener('keyup', (e) => {
+                keys[e.key.toLowerCase()] = false;
+            });
+
+            let mouseX = 0, mouseY = 0;
+
+            window.addEventListener('mousedown', (e) => {
+                mouseDown = true;
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!mouseDown) return;
+
+                camera.rotation.y -= (e.clientX - mouseX) * 0.005;
+                camera.rotation.x -= (e.clientY - mouseY) * 0.005;
+                camera.rotation.x = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, camera.rotation.x));
+
+                mouseX = e.clientX;
+                mouseY = e.clientY;
+            });
+
+            window.addEventListener('mouseup', () => {
+                mouseDown = false;
+            });
+
+            window.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const moveSpeed = 0.1;
+
+            if (keys['arrowup']) {
+                camera.position.x -= Math.sin(camera.rotation.y) * moveSpeed;
+                camera.position.z -= Math.cos(camera.rotation.y) * moveSpeed;
+            }
+            if (keys['arrowdown']) {
+                camera.position.x += Math.sin(camera.rotation.y) * moveSpeed;
+                camera.position.z += Math.cos(camera.rotation.y) * moveSpeed;
+            }
+
+            if (keys['arrowleft']) {
+                camera.position.x -= Math.cos(camera.rotation.y) * moveSpeed;
+                camera.position.z += Math.sin(camera.rotation.y) * moveSpeed;
+            }
+            if (keys['arrowright']) {
+                camera.position.x += Math.cos(camera.rotation.y) * moveSpeed;
+                camera.position.z -= Math.sin(camera.rotation.y) * moveSpeed;
+            }
+
+            const maxZ = hallLength / 2 - 2;
+            camera.position.x = Math.max(-1.5, Math.min(1.5, camera.position.x));
+            camera.position.z = Math.max(-maxZ, Math.min(maxZ, camera.position.z));
+
+            renderer.render(scene, camera);
+
+            if (stats) stats.update();
+        }
+    </script>
+</head>
+
+<body>
+    <!-- Canvas will be inserted here by Three.js -->
+</body>
+
+</html>
